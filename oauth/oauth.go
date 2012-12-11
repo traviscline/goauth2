@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -285,14 +286,39 @@ func (t *Transport) updateToken(tok *Token, v url.Values) error {
 	if r.StatusCode != 200 {
 		return OAuthError{"updateToken", r.Status}
 	}
+
 	var b struct {
 		Access    string        `json:"access_token"`
 		Refresh   string        `json:"refresh_token"`
 		ExpiresIn time.Duration `json:"expires_in"`
 	}
-	if err = json.NewDecoder(r.Body).Decode(&b); err != nil {
+
+	body := make([]byte, r.ContentLength)
+	_, err = r.Body.Read(body)
+	if err != nil {
 		return err
 	}
+
+	if err = json.Unmarshal(body, &b); err != nil {
+		// If a JSON syntax error occurs at offset 1, attempt to decode as
+		// a URL-encoded query.
+		switch e := err.(type) {
+		default:
+			return err
+		case *json.SyntaxError:
+			if e.Offset != 1 {
+				return err
+			}
+			vals, err := url.ParseQuery(string(body))
+			b.Access = vals.Get("access_token")
+			expires_in, err := strconv.Atoi(vals.Get("expires"))
+			if err != nil {
+				return err
+			}
+			b.ExpiresIn = time.Duration(expires_in)
+		}
+	}
+
 	tok.AccessToken = b.Access
 	// Don't overwrite `RefreshToken` with an empty value
 	if len(b.Refresh) > 0 {
